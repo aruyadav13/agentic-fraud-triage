@@ -1,4 +1,5 @@
 """Bounded LangChain tool loop with evidence gates and conservative failure routing."""
+
 import json
 import time
 
@@ -19,13 +20,26 @@ An unusual amount alone is not proof of fraud. Never invent tool results.
 
 
 def review(case_id, reason, **kwargs):
-    return Investigation(transaction_id=case_id, decision="review", confidence=0.0,
-                         reason=reason, evidence=kwargs.pop("evidence", []), **kwargs)
+    return Investigation(
+        transaction_id=case_id,
+        decision="review",
+        confidence=0.0,
+        reason=reason,
+        evidence=kwargs.pop("evidence", []),
+        **kwargs,
+    )
 
 
 class TriageAgent:
-    def __init__(self, model, store: EvidenceStore, max_steps=6, max_errors=2,
-                 min_confidence=0.8, min_history=3):
+    def __init__(
+        self,
+        model,
+        store: EvidenceStore,
+        max_steps=6,
+        max_errors=2,
+        min_confidence=0.8,
+        min_history=3,
+    ):
         if max_steps < 1 or max_errors < 0 or not 0 <= min_confidence <= 1 or min_history < 0:
             raise ValueError("Invalid agent limits")
         self.model, self.store = model, store
@@ -39,18 +53,31 @@ class TriageAgent:
         final_schema = convert_to_openai_tool(Verdict)
         final_schema["function"]["name"] = "submit_verdict"
         model = self.model.bind_tools([*tools.values(), final_schema])
-        messages = [SystemMessage(content=SYSTEM), HumanMessage(content=json.dumps({
-            "transaction_id": case_id, "amount": float(row.amount),
-            "timestamp": str(row.timestamp),
-        }))]
+        messages = [
+            SystemMessage(content=SYSTEM),
+            HumanMessage(
+                content=json.dumps(
+                    {
+                        "transaction_id": case_id,
+                        "amount": float(row.amount),
+                        "timestamp": str(row.timestamp),
+                    }
+                )
+            ),
+        ]
         evidence, trace = {}, []
         calls = input_tokens = output_tokens = errors = 0
         usage_complete = True
 
         def finish(verdict=None, reason=None):
-            common = dict(trace=trace, model_calls=calls, input_tokens=input_tokens,
-                          output_tokens=output_tokens, usage_complete=usage_complete,
-                          elapsed_seconds=time.perf_counter() - start)
+            common = dict(
+                trace=trace,
+                model_calls=calls,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage_complete=usage_complete,
+                elapsed_seconds=time.perf_counter() - start,
+            )
             if verdict is None:
                 return review(case_id, reason, evidence=sorted(evidence), **common)
             return Investigation(transaction_id=case_id, **verdict.model_dump(), **common)
@@ -76,17 +103,22 @@ class TriageAgent:
                 trace.append({"event": "malformed_call", "count": len(response.invalid_tool_calls)})
                 # Replace unparsable assistant content so a provider can accept the repair turn.
                 messages[-1] = AIMessage(content="My tool arguments were malformed.")
-                messages.append(HumanMessage(content="Retry with valid tool JSON matching the schema."))
+                messages.append(
+                    HumanMessage(content="Retry with valid tool JSON matching the schema.")
+                )
             elif not response.tool_calls:
                 errors += 1
                 trace.append({"event": "missing_tool_call"})
-                messages.append(HumanMessage(content="Use the tools, then submit_verdict; no free text."))
+                messages.append(
+                    HumanMessage(content="Use the tools, then submit_verdict; no free text.")
+                )
             elif len(response.tool_calls) > 4:
                 return finish(reason="Too many tool calls in one turn; human review required")
             else:
                 # Reject mixed verdict/data batches: gather evidence in a completed prior turn.
                 mixed = len(response.tool_calls) > 1 and any(
-                    c["name"] == "submit_verdict" for c in response.tool_calls)
+                    c["name"] == "submit_verdict" for c in response.tool_calls
+                )
                 for call in response.tool_calls:
                     name, args = call["name"], call["args"]
                     try:
@@ -97,10 +129,16 @@ class TriageAgent:
                             if not set(verdict.evidence).issubset(evidence):
                                 raise ValueError("Verdict cites evidence that was not retrieved")
                             if verdict.decision != "review":
-                                if set(evidence) != set(tools) or set(verdict.evidence) != set(tools):
-                                    return finish(reason="Missing required evidence; human review required")
+                                if set(evidence) != set(tools) or set(verdict.evidence) != set(
+                                    tools
+                                ):
+                                    return finish(
+                                        reason="Missing required evidence; human review required"
+                                    )
                                 if evidence["account_history"]["prior_count"] < self.min_history:
-                                    return finish(reason="Insufficient account history; human review required")
+                                    return finish(
+                                        reason="Insufficient account history; human review required"
+                                    )
                                 if verdict.confidence < self.min_confidence:
                                     return finish(reason="Low confidence; human review required")
                             trace.append({"event": "verdict", "result": verdict.model_dump()})
@@ -113,8 +151,12 @@ class TriageAgent:
                         content = json.dumps(result)
                     except (ValueError, TypeError, KeyError) as exc:
                         errors += 1
-                        content = json.dumps({"error": str(exc), "action": "repair arguments and retry"})
-                        trace.append({"event": "tool_error", "tool": name, "error": type(exc).__name__})
+                        content = json.dumps(
+                            {"error": str(exc), "action": "repair arguments and retry"}
+                        )
+                        trace.append(
+                            {"event": "tool_error", "tool": name, "error": type(exc).__name__}
+                        )
                     messages.append(ToolMessage(content=content, tool_call_id=call["id"]))
             if errors > self.max_errors:
                 return finish(reason="Malformed-call retry budget exhausted; human review required")
